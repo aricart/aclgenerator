@@ -1,7 +1,9 @@
-package SubjectTemplates
+package aclgenerator
 
 import (
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"testing"
 
 	"github.com/nats-io/jwt/v2"
@@ -246,4 +248,107 @@ func Test_UserTags(t *testing.T) {
 		require.NoError(t, err)
 		assert.EqualValues(t, tt.result, results)
 	}
+}
+
+func logA(t *testing.T, arg []string) {
+	for _, s := range arg {
+		t.Log(s)
+	}
+}
+
+func Test_KV_GenerateAccess(t *testing.T) {
+	a, err := ParseGenerateKvAdmin("{{kv_admin()}}")
+	require.NoError(t, err)
+	logA(t, a)
+
+	a, err = ParseGenerateKvRead("{{ kv_read() }}")
+	require.NoError(t, err)
+	logA(t, a)
+
+	a, err = ParseGenerateKvWrite("{{kv_write(key=a)}}")
+	require.NoError(t, err)
+	logA(t, a)
+}
+
+func Benchmark_TagParsingNone(b *testing.B) {
+	b.StopTimer()
+	a, err := randomStringArray(30, 15)
+	require.NoError(b, err)
+
+	for idx, v := range a {
+		a[idx] = fmt.Sprintf("aaaa:%s", v)
+	}
+	ac := createAccount("A", a...)
+	uc := createUser("U", a...)
+
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		newACLGeneratorCtx(ac, uc)
+	}
+	b.StopTimer()
+}
+
+func Benchmark_AccountName(b *testing.B) {
+	b.StopTimer()
+	a, err := randomStringArray(10, 15)
+	require.NoError(b, err)
+
+	for idx, v := range a {
+		a[idx] = fmt.Sprintf("idx:%s", v)
+	}
+	ac := createAccount("A", a...)
+	uc := createUser("U", a...)
+
+	ctx := newACLGeneratorCtx(ac, uc)
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = ctx.ProcessTemplate("{{account-name()}}")
+	}
+	b.StopTimer()
+}
+
+func Benchmark_UserName(b *testing.B) {
+	b.StopTimer()
+	a, err := randomStringArray(10, 15)
+	require.NoError(b, err)
+
+	for idx, v := range a {
+		a[idx] = fmt.Sprintf("idx:%s", v)
+	}
+	ac := createAccount("A", a...)
+	uc := createUser("U", a...)
+
+	ctx := newACLGeneratorCtx(ac, uc)
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = ctx.ProcessTemplate("{{name()}}")
+	}
+	b.StopTimer()
+}
+
+func randomString(n int) (string, error) {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	v := make([]byte, n)
+	for i := range v {
+		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+		if err != nil {
+			return "", err
+		}
+		v[i] = letters[num.Int64()]
+	}
+	return string(v), nil
+}
+
+func randomStringArray(arrayLength int, stringLength int) ([]string, error) {
+	randomStrings := make([]string, arrayLength)
+
+	for i := 0; i < arrayLength; i++ {
+		randomString, err := randomString(stringLength)
+		if err != nil {
+			return nil, err
+		}
+		randomStrings[i] = randomString
+	}
+
+	return randomStrings, nil
 }

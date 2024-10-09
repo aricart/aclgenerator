@@ -1,4 +1,4 @@
-package SubjectTemplates
+package aclgenerator
 
 import (
 	"errors"
@@ -7,6 +7,19 @@ import (
 	"strings"
 
 	"github.com/nats-io/jwt/v2"
+)
+
+var (
+	mustacheRE = regexp.MustCompile(`{{2}([^}]+)}{2}`)
+
+	accountNameRE = regexp.MustCompile(`(?i)^account-name\(\)`)
+	userNameRE    = regexp.MustCompile(`(?i)^name\(\)`)
+
+	accountTagRE = regexp.MustCompile(`(?i)^account-tag\(([^)]+)\)`)
+	userTagRE    = regexp.MustCompile(`(?i)^tag\(([^)]+)\)`)
+
+	accountSubjectRE = regexp.MustCompile(`(?i)^account-subject\(\)`)
+	userSubjectRE    = regexp.MustCompile(`(?i)^subject\(\)`)
 )
 
 // Macro is created by a parse function that matches some operation
@@ -27,6 +40,108 @@ type Macro interface {
 	// that matches its initialization source string with the
 	// resolved permuted value for the specified iteration
 	RenderPermute(template string, idx int) string
+}
+
+type Generator interface {
+	Render(template string) []string
+}
+
+func parseProperty(s string, name string) string {
+	var v string
+	re := regexp.MustCompile(fmt.Sprintf(`(?i)%s=(\w+)`, name))
+	if m := re.FindStringSubmatch(s); m != nil {
+		v = m[1]
+	}
+	return v
+}
+
+func ParseGenerateKvAdmin(s string) ([]string, error) {
+	re := regexp.MustCompile(`(?i)^{{2}[\s+]?kv_admin\(([^)]*)\)[\s+]?}{2}`)
+	if m := re.FindStringSubmatch(s); m != nil {
+		config := strings.TrimSpace(m[1])
+
+		bucket := parseProperty(config, "bucket")
+		if bucket == "" {
+			bucket = "*"
+		}
+
+		prefix := parseProperty(config, "prefix")
+		if prefix == "" {
+			prefix = "$JS.API"
+		}
+
+		var subjects []string
+		// stream list
+		subjects = append(subjects, fmt.Sprintf("%s.INFO", prefix))
+		subjects = append(subjects, fmt.Sprintf("%s.STREAM.LIST", prefix))
+		subjects = append(subjects, fmt.Sprintf("%s.STREAM.CREATE.%s", prefix, bucket))
+		subjects = append(subjects, fmt.Sprintf("%s.STREAM.DELETE.%s", prefix, bucket))
+		return subjects, nil
+	}
+	return nil, nil
+}
+
+func ParseGenerateKvRead(s string) ([]string, error) {
+	re := regexp.MustCompile(`(?i)^{{2}[\s+]?kv_read\(([^)]*)\)[\s+]?}{2}`)
+	if m := re.FindStringSubmatch(s); m != nil {
+		config := strings.TrimSpace(m[1])
+		// bucket=name
+		// prefix=prefix
+		// key=subj
+		bucket := parseProperty(config, "bucket")
+		if bucket == "" {
+			bucket = "*"
+		}
+		key := parseProperty(config, "key")
+		if key == "" {
+			key = ">"
+		} else {
+			key = fmt.Sprintf("$KV.%s.%s", bucket, key)
+		}
+
+		prefix := parseProperty(config, "prefix")
+		if prefix == "" {
+			prefix = "$JS.API"
+		}
+
+		var subjects []string
+		subjects = append(subjects, fmt.Sprintf("%s.STREAM.INFO.%s", prefix, bucket))
+		subjects = append(subjects, fmt.Sprintf("%s.DIRECT.GET.%s.%s", prefix, bucket, key))
+		subjects = append(subjects, fmt.Sprintf("%s.STREAM.MSG.GET.%s", prefix, bucket))
+		subjects = append(subjects, fmt.Sprintf("%s.CONSUMER.CREATE.%s.*.%s", prefix, bucket, key))
+		return subjects, nil
+	}
+	return nil, nil
+}
+
+func ParseGenerateKvWrite(s string) ([]string, error) {
+	re := regexp.MustCompile(`(?i)^{{2}[\s+]?kv_write\(([^)]*)\)[\s+]?}{2}`)
+	if m := re.FindStringSubmatch(s); m != nil {
+		config := strings.TrimSpace(m[1])
+		// bucket=name
+		// prefix=prefix
+		// key=subj
+		bucket := parseProperty(config, "bucket")
+		if bucket == "" {
+			bucket = "*"
+		}
+		key := parseProperty(config, "key")
+		if key == "" {
+			key = ">"
+		} else {
+			key = fmt.Sprintf("$KV.%s.%s", bucket, key)
+		}
+
+		prefix := parseProperty(config, "prefix")
+		if prefix == "" {
+			prefix = "$JS.API"
+		}
+
+		var subjects []string
+		subjects = append(subjects, fmt.Sprintf("$KV.%s.%s", bucket, key))
+		return subjects, nil
+	}
+	return nil, nil
 }
 
 type baseMacro struct {
@@ -60,8 +175,7 @@ func normalizeTemplate(s string) string {
 func ParseAccountTags(s string) (Macro, error) {
 	a := AccountTag{}
 	a.src = s
-	re := regexp.MustCompile(`(?i)^account-tag\(([^)]+)\)`)
-	if m := re.FindStringSubmatch(normalizeTemplate(s)); m != nil {
+	if m := accountTagRE.FindStringSubmatch(normalizeTemplate(s)); m != nil {
 		tagName := strings.ToLower(strings.TrimSpace(m[1]))
 		if tagName == "" {
 			return nil, fmt.Errorf("tag name is empty: %s", s)
@@ -75,8 +189,7 @@ func ParseAccountTags(s string) (Macro, error) {
 func ParseUserTags(s string) (Macro, error) {
 	a := UserTag{}
 	a.src = s
-	re := regexp.MustCompile(`(?i)^tag\(([^)]+)\)`)
-	if m := re.FindStringSubmatch(normalizeTemplate(s)); m != nil {
+	if m := userTagRE.FindStringSubmatch(normalizeTemplate(s)); m != nil {
 		tagName := strings.ToLower(strings.TrimSpace(m[1]))
 		if tagName == "" {
 			return nil, fmt.Errorf("tag name is empty: %s", s)
@@ -90,8 +203,7 @@ func ParseUserTags(s string) (Macro, error) {
 func ParseAccountName(s string) (Macro, error) {
 	a := AccountName{}
 	a.src = s
-	re := regexp.MustCompile(`(?i)^account-name\(\)`)
-	if m := re.FindStringSubmatch(normalizeTemplate(s)); m != nil {
+	if m := accountNameRE.FindStringSubmatch(normalizeTemplate(s)); m != nil {
 		return &a, nil
 	}
 	return nil, nil
@@ -100,8 +212,7 @@ func ParseAccountName(s string) (Macro, error) {
 func ParseUserName(s string) (Macro, error) {
 	un := UserName{}
 	un.src = s
-	re := regexp.MustCompile(`(?i)^name\(\)`)
-	if m := re.FindStringSubmatch(normalizeTemplate(s)); m != nil {
+	if m := userNameRE.FindStringSubmatch(normalizeTemplate(s)); m != nil {
 		return &un, nil
 	}
 	return nil, nil
@@ -110,8 +221,7 @@ func ParseUserName(s string) (Macro, error) {
 func ParseAccountSubject(s string) (Macro, error) {
 	a := AccountSubject{}
 	a.src = s
-	re := regexp.MustCompile(`(?i)^account-subject\(\)`)
-	if m := re.FindStringSubmatch(normalizeTemplate(s)); m != nil {
+	if m := accountSubjectRE.FindStringSubmatch(normalizeTemplate(s)); m != nil {
 		return &a, nil
 	}
 	return nil, nil
@@ -120,8 +230,7 @@ func ParseAccountSubject(s string) (Macro, error) {
 func ParseUserSubject(s string) (Macro, error) {
 	us := UserSubject{}
 	us.src = s
-	re := regexp.MustCompile(`(?i)^subject\(\)`)
-	if m := re.FindStringSubmatch(normalizeTemplate(s)); m != nil {
+	if m := userSubjectRE.FindStringSubmatch(normalizeTemplate(s)); m != nil {
 		return &us, nil
 	}
 	return nil, nil
@@ -183,7 +292,8 @@ func (an *UserSubject) Resolve(ctx *ACLGeneratorCtx) error {
 }
 
 func (an *AccountTag) Resolve(ctx *ACLGeneratorCtx) error {
-	values := ctx.accountTags[an.arg]
+	tags := ctx.AccountTags()
+	values := tags[an.arg]
 	if len(values) == 0 {
 		return fmt.Errorf("account tag %q doesn't exist", an.arg)
 	}
@@ -192,7 +302,8 @@ func (an *AccountTag) Resolve(ctx *ACLGeneratorCtx) error {
 }
 
 func (an *UserTag) Resolve(ctx *ACLGeneratorCtx) error {
-	values := ctx.userTags[an.arg]
+	tags := ctx.UserTags()
+	values := tags[an.arg]
 	if len(values) == 0 {
 		return fmt.Errorf("user tag %q doesn't exist", an.arg)
 	}
@@ -204,8 +315,6 @@ func newACLGeneratorCtx(acc *jwt.AccountClaims, user *jwt.UserClaims) *ACLGenera
 	ctx := ACLGeneratorCtx{}
 	ctx.acc = acc
 	ctx.user = user
-	ctx.accountTags = ctx.processTags(acc.Tags)
-	ctx.userTags = ctx.processTags(user.Tags)
 	ctx.fns = ParseFns()
 
 	return &ctx
@@ -229,6 +338,20 @@ func (ctx *ACLGeneratorCtx) RejectBadMacros() {
 
 func (ctx *ACLGeneratorCtx) setParseFn(fn ParseFn) {
 	ctx.fns = []ParseFn{fn}
+}
+
+func (ctx *ACLGeneratorCtx) UserTags() map[string][]string {
+	if ctx.userTags == nil {
+		ctx.userTags = ctx.processTags(ctx.user.Tags)
+	}
+	return ctx.userTags
+}
+
+func (ctx *ACLGeneratorCtx) AccountTags() map[string][]string {
+	if ctx.accountTags == nil {
+		ctx.accountTags = ctx.processTags(ctx.acc.Tags)
+	}
+	return ctx.accountTags
 }
 
 // processTags processes the tag lists by normalizing the tag names
@@ -312,8 +435,7 @@ func (ctx *ACLGeneratorCtx) ProcessTemplate(subj string) ([]string, error) {
 	// parse all the macros
 	var macros []Macro
 	// look for the closest `{{ }}` - we can have several of these in a single template
-	re := regexp.MustCompile(`{{2}([^}]+)}{2}`)
-	placeHolders := re.FindAllString(subj, -1)
+	placeHolders := mustacheRE.FindAllString(subj, -1)
 	for _, ph := range placeHolders {
 		ok := false
 		for _, fn := range ctx.fns {
