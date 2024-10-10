@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/nats-io/jwt/v2"
 )
@@ -20,6 +21,11 @@ var (
 
 	accountSubjectRE = regexp.MustCompile(`(?i)^account-subject\(\)`)
 	userSubjectRE    = regexp.MustCompile(`(?i)^subject\(\)`)
+
+	// {{ kvAdmin(bucket={{tag}}) }}
+	kvAdminRE = regexp.MustCompile(`(?i)^{{2}[\s+]?kv_admin\(([^)]*)\)[\s+]?}{2}`)
+	kvReadRE  = regexp.MustCompile(`(?i)^{{2}[\s+]?kv_read\(([^)]*)\)[\s+]?}{2}`)
+	kvWriteRE = regexp.MustCompile(`(?i)^{{2}[\s+]?kv_write\(([^)]*)\)[\s+]?}{2}`)
 )
 
 // Macro is created by a parse function that matches some operation
@@ -46,100 +52,115 @@ type Generator interface {
 	Render(template string) []string
 }
 
-func parseProperty(s string, name string) string {
+var (
+	props     map[string]*regexp.Regexp
+	propsLock = sync.Mutex{}
+)
+
+func getProperty(s string, name string) string {
+	re := getPropertyRE(name)
 	var v string
-	re := regexp.MustCompile(fmt.Sprintf(`(?i)%s=(\w+)`, name))
 	if m := re.FindStringSubmatch(s); m != nil {
 		v = m[1]
 	}
 	return v
 }
 
+func buildPropertyRE(name string) *regexp.Regexp {
+	return regexp.MustCompile(fmt.Sprintf(`(?i)%s=(\w+)`, name))
+}
+
+func getPropertyRE(name string) *regexp.Regexp {
+	propsLock.Lock()
+	defer propsLock.Unlock()
+	if props == nil {
+		props = make(map[string]*regexp.Regexp)
+	}
+	re := props[name]
+	if re == nil {
+		re = buildPropertyRE(name)
+		props[name] = re
+	}
+	return re
+}
+
 func ParseGenerateKvAdmin(s string) ([]string, error) {
-	re := regexp.MustCompile(`(?i)^{{2}[\s+]?kv_admin\(([^)]*)\)[\s+]?}{2}`)
-	if m := re.FindStringSubmatch(s); m != nil {
+	if m := kvAdminRE.FindStringSubmatch(s); m != nil {
 		config := strings.TrimSpace(m[1])
 
-		bucket := parseProperty(config, "bucket")
+		bucket := getProperty(config, "bucket")
 		if bucket == "" {
 			bucket = "*"
 		}
-
-		prefix := parseProperty(config, "prefix")
+		prefix := getProperty(config, "prefix")
 		if prefix == "" {
 			prefix = "$JS.API"
 		}
 
-		var subjects []string
-		// stream list
-		subjects = append(subjects, fmt.Sprintf("%s.INFO", prefix))
-		subjects = append(subjects, fmt.Sprintf("%s.STREAM.LIST", prefix))
-		subjects = append(subjects, fmt.Sprintf("%s.STREAM.CREATE.%s", prefix, bucket))
-		subjects = append(subjects, fmt.Sprintf("%s.STREAM.DELETE.%s", prefix, bucket))
-		return subjects, nil
+		return []string{
+			fmt.Sprintf("%s.INFO", prefix),
+			fmt.Sprintf("%s.STREAM.LIST", prefix),
+			fmt.Sprintf("%s.STREAM.CREATE.%s", prefix, bucket),
+			fmt.Sprintf("%s.STREAM.DELETE.%s", prefix, bucket),
+		}, nil
 	}
 	return nil, nil
 }
 
 func ParseGenerateKvRead(s string) ([]string, error) {
-	re := regexp.MustCompile(`(?i)^{{2}[\s+]?kv_read\(([^)]*)\)[\s+]?}{2}`)
-	if m := re.FindStringSubmatch(s); m != nil {
+	if m := kvReadRE.FindStringSubmatch(s); m != nil {
 		config := strings.TrimSpace(m[1])
 		// bucket=name
 		// prefix=prefix
 		// key=subj
-		bucket := parseProperty(config, "bucket")
+		bucket := getProperty(config, "bucket")
 		if bucket == "" {
 			bucket = "*"
 		}
-		key := parseProperty(config, "key")
+		key := getProperty(config, "key")
 		if key == "" {
 			key = ">"
 		} else {
 			key = fmt.Sprintf("$KV.%s.%s", bucket, key)
 		}
 
-		prefix := parseProperty(config, "prefix")
+		prefix := getProperty(config, "prefix")
 		if prefix == "" {
 			prefix = "$JS.API"
 		}
 
-		var subjects []string
-		subjects = append(subjects, fmt.Sprintf("%s.STREAM.INFO.%s", prefix, bucket))
-		subjects = append(subjects, fmt.Sprintf("%s.DIRECT.GET.%s.%s", prefix, bucket, key))
-		subjects = append(subjects, fmt.Sprintf("%s.STREAM.MSG.GET.%s", prefix, bucket))
-		subjects = append(subjects, fmt.Sprintf("%s.CONSUMER.CREATE.%s.*.%s", prefix, bucket, key))
-		return subjects, nil
+		return []string{
+			fmt.Sprintf("%s.STREAM.INFO.%s", prefix, bucket),
+			fmt.Sprintf("%s.DIRECT.GET.%s.%s", prefix, bucket, key),
+			fmt.Sprintf("%s.STREAM.MSG.GET.%s", prefix, bucket),
+			fmt.Sprintf("%s.CONSUMER.CREATE.%s.*.%s", prefix, bucket, key),
+		}, nil
 	}
 	return nil, nil
 }
 
 func ParseGenerateKvWrite(s string) ([]string, error) {
-	re := regexp.MustCompile(`(?i)^{{2}[\s+]?kv_write\(([^)]*)\)[\s+]?}{2}`)
-	if m := re.FindStringSubmatch(s); m != nil {
+	if m := kvWriteRE.FindStringSubmatch(s); m != nil {
 		config := strings.TrimSpace(m[1])
 		// bucket=name
 		// prefix=prefix
 		// key=subj
-		bucket := parseProperty(config, "bucket")
+		bucket := getProperty(config, "bucket")
 		if bucket == "" {
 			bucket = "*"
 		}
-		key := parseProperty(config, "key")
+		key := getProperty(config, "key")
 		if key == "" {
 			key = ">"
 		} else {
 			key = fmt.Sprintf("$KV.%s.%s", bucket, key)
 		}
 
-		prefix := parseProperty(config, "prefix")
+		prefix := getProperty(config, "prefix")
 		if prefix == "" {
 			prefix = "$JS.API"
 		}
-
-		var subjects []string
-		subjects = append(subjects, fmt.Sprintf("$KV.%s.%s", bucket, key))
-		return subjects, nil
+		return []string{fmt.Sprintf("$KV.%s.%s", bucket, key)}, nil
 	}
 	return nil, nil
 }
@@ -252,6 +273,16 @@ func ParseFns() []ParseFn {
 		ParseAccountName, ParseUserName,
 		ParseAccountSubject, ParseUserSubject,
 		ParseAccountTags, ParseUserTags,
+	}
+}
+
+type GeneratorFn func(s string) ([]string, error)
+
+func GeneratorFns() []GeneratorFn {
+	return []GeneratorFn{
+		ParseGenerateKvRead,
+		ParseGenerateKvWrite,
+		ParseGenerateKvAdmin,
 	}
 }
 
@@ -422,11 +453,77 @@ func permute(a ...[]string) (int, [][]string) {
 	return c, p
 }
 
-// ProcessTemplate takes a subject possibly containing templates, and parses
+func (ctx *ACLGeneratorCtx) Process(template string) ([]string, error) {
+	var buf []string
+	a, err := ctx.processGenerators(template)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		return []string{template}, nil
+	}
+	for _, v := range a {
+		aa, err := ctx.processTemplate(v)
+		for _, v := range aa {
+			if err != nil {
+				return nil, err
+			}
+			vr := &jwt.ValidationResults{}
+			jwt.Subject(v).Validate(vr)
+			if errs := vr.Errors(); len(errs) != 0 {
+				return nil, errs[0]
+			}
+			buf = append(buf, v)
+		}
+	}
+	return buf, nil
+}
+
+func (ctx *ACLGeneratorCtx) processGenerators(template string) ([]string, error) {
+	t := strings.TrimSpace(template)
+	if t == "" {
+		return []string{t}, nil
+	}
+	// generators must start with a {{ and end with a }}
+	if strings.HasPrefix(t, "{{") && strings.HasSuffix(t, "}}") {
+		// this is a candidate - remove the braces, so we can parse other macros
+		t = strings.TrimSuffix(strings.TrimPrefix(t, "{{"), "}}")
+		// by processing templates gain ability to nest macros...
+		// {{ kv_admin(bucket={{tag(bucket)}}) }}
+		// kv_admin(bucket={{tag(bucket))}})
+		// kv_admin(bucket=hello)
+		// {{ kv_admin(bucket=hello) }}
+		// and then the expansion
+		a, err := ctx.processTemplate(t)
+		if err != nil {
+			return nil, err
+		}
+		var buf []string
+		for _, v := range a {
+			// re-wrap so the generator matches
+			tt := fmt.Sprintf("{{ %s }}", v)
+			for _, fn := range GeneratorFns() {
+				values, err := fn(tt)
+				if err != nil {
+					return nil, err
+				}
+				if values != nil {
+					for _, vv := range values {
+						buf = append(buf, vv)
+					}
+				}
+			}
+		}
+		return buf, nil
+	}
+	return nil, nil
+}
+
+// processTemplate takes a subject possibly containing templates, and parses
 // any macros it may contain, returning a list of subjects that the template
 // mapped or an error if the macro encountered an error or a render resolved
 // into an invalid subject.
-func (ctx *ACLGeneratorCtx) ProcessTemplate(subj string) ([]string, error) {
+func (ctx *ACLGeneratorCtx) processTemplate(subj string) ([]string, error) {
 	subj = strings.TrimSpace(subj)
 	if subj == "" {
 		return []string{subj}, nil
@@ -436,6 +533,10 @@ func (ctx *ACLGeneratorCtx) ProcessTemplate(subj string) ([]string, error) {
 	var macros []Macro
 	// look for the closest `{{ }}` - we can have several of these in a single template
 	placeHolders := mustacheRE.FindAllString(subj, -1)
+	// if no placeholders, nothing to do
+	if len(placeHolders) == 0 {
+		return []string{subj}, nil
+	}
 	for _, ph := range placeHolders {
 		ok := false
 		for _, fn := range ctx.fns {
@@ -456,6 +557,7 @@ func (ctx *ACLGeneratorCtx) ProcessTemplate(subj string) ([]string, error) {
 			return nil, fmt.Errorf("bad macro: %q", ph)
 		}
 	}
+
 	count := ctx.fillPermutes(macros...)
 
 	// this will result in acls[count]
@@ -468,12 +570,6 @@ func (ctx *ACLGeneratorCtx) ProcessTemplate(subj string) ([]string, error) {
 		t := subj
 		for _, m := range macros {
 			t = m.RenderPermute(t, i)
-		}
-		// if the subject is not valid fail
-		vr := &jwt.ValidationResults{}
-		jwt.Subject(t).Validate(vr)
-		if errs := vr.Errors(); len(errs) != 0 {
-			return nil, errs[0]
 		}
 		acls = append(acls, t)
 	}

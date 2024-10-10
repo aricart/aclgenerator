@@ -31,7 +31,7 @@ func Test_RejectBadMacros(t *testing.T) {
 		{src: "account.tag.{{account-tag(a)}}", result: []string{"account.tag.AA"}},
 	}
 	for _, tt := range tests {
-		acls, err := ctx.ProcessTemplate(tt.src)
+		acls, err := ctx.processTemplate(tt.src)
 		if tt.shouldFail {
 			require.Error(t, err)
 		} else {
@@ -63,7 +63,7 @@ func Test_ParseAccountName(t *testing.T) {
 		if tt.result == nil {
 			tt.result = []string{tt.src}
 		}
-		acls, err := ctx.ProcessTemplate(tt.src)
+		acls, err := ctx.processTemplate(tt.src)
 		require.NoError(t, err)
 		require.NotNil(t, acls)
 		require.Equal(t, tt.result, acls)
@@ -91,7 +91,7 @@ func Test_ParseUserName(t *testing.T) {
 		if tt.result == nil {
 			tt.result = []string{tt.src}
 		}
-		acls, err := ctx.ProcessTemplate(tt.src)
+		acls, err := ctx.processTemplate(tt.src)
 		require.NoError(t, err)
 		require.NotNil(t, acls)
 		require.Equal(t, tt.result, acls)
@@ -119,7 +119,7 @@ func Test_ParseAccountSubject(t *testing.T) {
 		if tt.result == nil {
 			tt.result = []string{tt.src}
 		}
-		acls, err := ctx.ProcessTemplate(tt.src)
+		acls, err := ctx.processTemplate(tt.src)
 		require.NoError(t, err)
 		require.NotNil(t, acls)
 		require.Equal(t, tt.result, acls)
@@ -147,7 +147,7 @@ func Test_ParseUserSubject(t *testing.T) {
 		if tt.result == nil {
 			tt.result = []string{tt.src}
 		}
-		acls, err := ctx.ProcessTemplate(tt.src)
+		acls, err := ctx.processTemplate(tt.src)
 		require.NoError(t, err)
 		require.NotNil(t, acls)
 		require.Equal(t, tt.result, acls)
@@ -175,7 +175,7 @@ func Test_ParseAccountTags(t *testing.T) {
 		if tt.result == nil {
 			tt.result = []string{tt.src}
 		}
-		acls, err := ctx.ProcessTemplate(tt.src)
+		acls, err := ctx.processTemplate(tt.src)
 		require.NoError(t, err)
 		require.NotNil(t, acls)
 		require.Equal(t, tt.result, acls)
@@ -203,7 +203,7 @@ func Test_ParseUserTags(t *testing.T) {
 		if tt.result == nil {
 			tt.result = []string{tt.src}
 		}
-		acls, err := ctx.ProcessTemplate(tt.src)
+		acls, err := ctx.processTemplate(tt.src)
 		require.NoError(t, err)
 		require.NotNil(t, acls)
 		require.Equal(t, tt.result, acls)
@@ -244,7 +244,7 @@ func Test_UserTags(t *testing.T) {
 		{"hello.{{weird}}.>", []string{"hello.{{weird}}.>"}},
 	}
 	for _, tt := range tests {
-		results, err := ctx.ProcessTemplate(tt.s)
+		results, err := ctx.processTemplate(tt.s)
 		require.NoError(t, err)
 		assert.EqualValues(t, tt.result, results)
 	}
@@ -268,6 +268,26 @@ func Test_KV_GenerateAccess(t *testing.T) {
 	a, err = ParseGenerateKvWrite("{{kv_write(key=a)}}")
 	require.NoError(t, err)
 	logA(t, a)
+}
+
+func Test_Plain(t *testing.T) {
+	ctx := newACLGeneratorCtx(createAccount("A"), createUser("U", "a:aa"))
+	a, err := ctx.Process("hello.world")
+	require.NoError(t, err)
+	require.Len(t, a, 1)
+	require.Equal(t, "hello.world", a[0])
+}
+
+func Test_Generator(t *testing.T) {
+	ctx := newACLGeneratorCtx(createAccount("A"), createUser("U", "a:aa"))
+	a, err := ctx.Process("{{ kv_admin(bucket={{tag(a)}}) }}")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	require.Len(t, a, 4)
+	require.Contains(t, a, "$JS.API.INFO")
+	require.Contains(t, a, "$JS.API.STREAM.LIST")
+	require.Contains(t, a, "$JS.API.STREAM.CREATE.aa")
+	require.Contains(t, a, "$JS.API.STREAM.DELETE.aa")
 }
 
 func Benchmark_TagParsingNone(b *testing.B) {
@@ -302,7 +322,7 @@ func Benchmark_AccountName(b *testing.B) {
 	ctx := newACLGeneratorCtx(ac, uc)
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = ctx.ProcessTemplate("{{account-name()}}")
+		_, _ = ctx.processTemplate("{{account-name()}}")
 	}
 	b.StopTimer()
 }
@@ -321,9 +341,27 @@ func Benchmark_UserName(b *testing.B) {
 	ctx := newACLGeneratorCtx(ac, uc)
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = ctx.ProcessTemplate("{{name()}}")
+		_, _ = ctx.processTemplate("{{name()}}")
 	}
 	b.StopTimer()
+}
+
+func Benchmark_buildPropertyRE(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		re := buildPropertyRE("name")
+		if re == nil {
+			require.Fail(b, "didn't get property")
+		}
+	}
+}
+
+func Benchmark_getPropertyRE(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		re := getPropertyRE("name")
+		if re == nil {
+			require.Fail(b, "didn't get property")
+		}
+	}
 }
 
 func randomString(n int) (string, error) {
